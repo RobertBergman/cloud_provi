@@ -1,0 +1,12 @@
+{
+  "tunnels": [
+    {
+      "name": "azure-vpngw-tun2",
+      "remote_ip": "172.177.98.104",
+      "psk": "AzureVpnGw2025Test!",
+      "local_bgp_ip": "169.254.21.6",
+      "remote_bgp_ip": "169.254.21.2",
+      "remote_asn": 65515
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+# Azure Dual-Stack Virtual WAN Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# =============================================================================
+# Environment Settings
+# =============================================================================
+
+environment = "prod"
+location    = "eastus2"
+
+# =============================================================================
+# Network Address Ranges
+# =============================================================================
+
+# Azure Virtual Network
+vnet_ipv4_cidr = "10.1.0.0/16"
+vnet_ipv6_cidr = "2001:db8:1::/48"
+
+# Virtual Hub
+hub_ipv4_cidr = "10.0.0.0/24"
+hub_ipv6_cidr = "fd00:db8::/64"
+
+# =============================================================================
+# On-Premises Configuration
+# =============================================================================
+
+# Your on-premises VPN device public IP
+onprem_public_ip = "203.0.113.1"
+
+# Your on-premises BGP settings
+onprem_bgp_asn     = 65001
+onprem_bgp_peer_ip = "192.168.1.1"
+
+# On-premises address ranges to advertise
+onprem_ipv4_ranges = [
+  "192.168.0.0/16"
+]
+
+onprem_ipv6_ranges = [
+  "2001:db8:2::/48"
+]
+
+# =============================================================================
+# VPN Configuration
+# =============================================================================
+
+# VPN pre-shared key (use a strong, random key)
+# IMPORTANT: Store this securely, not in version control
+vpn_shared_key = "YourStrongPreSharedKey123!"
+
+# VPN Gateway scale units (1 = 500 Mbps, 2 = 1 Gbps, etc.)
+vpn_scale_units = 1
+
+# =============================================================================
+# Simulated On-Premises Environment
+# =============================================================================
+# Set to true to deploy a simulated on-prem environment with strongSwan VPN
+
+onprem_sim_enabled  = true
+onprem_sim_location = "westus2"  # Different region for realism
+
+# Simulated on-prem network ranges
+onprem_sim_vnet_ipv4 = "192.168.0.0/16"
+onprem_sim_vnet_ipv6 = "2001:db8:2::/48"
+
+# VM configuration
+onprem_sim_vm_size       = "Standard_B2s"
+onprem_sim_admin_username = "azureuser"
+
+# Authentication: Use SSH key (recommended) OR password
+# SSH key - paste your public key here
+onprem_sim_admin_ssh_key = ""
+
+# Password - only used if SSH key is empty
+onprem_sim_admin_password = "P@ssw0rd123!"  # Change this!
+
+# =============================================================================
+# Tags
+# =============================================================================
+
+tags = {
+  Owner      = "network-team@company.com"
+  CostCenter = "IT-12345"
+  Project    = "dual-stack-vwan"
+}

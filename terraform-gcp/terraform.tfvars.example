@@ -1,0 +1,13 @@
+# GCP Dual-Stack VPN Configuration
+# Copy to terraform.tfvars and fill in values
+
+project_id = "your-gcp-project-id"
+
+# Regions
+region        = "us-central1"   # Cloud VPC region
+onprem_region = "us-east1"      # Simulated on-prem region
+
+environment = "prod"
+
+# VPN shared secret (generate a strong random string)
+vpn_shared_secret = "YourStrongSharedSecret123!"

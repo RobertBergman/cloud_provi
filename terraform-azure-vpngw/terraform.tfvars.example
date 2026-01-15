@@ -1,0 +1,41 @@
+# =============================================================================
+# Example terraform.tfvars for Azure VPN Gateway deployment
+# =============================================================================
+# Copy this file to terraform.tfvars and fill in your values.
+# =============================================================================
+
+environment = "prod"
+location    = "eastus2"
+
+# -----------------------------------------------------------------------------
+# On-Prem Router IPs (from terraform-onprem-sim output)
+# -----------------------------------------------------------------------------
+# Run `terraform output` in terraform-onprem-sim/ to get these values
+router_1_public_ip = "x.x.x.x"  # Replace with actual IP
+router_2_public_ip = "y.y.y.y"  # Replace with actual IP
+
+# -----------------------------------------------------------------------------
+# VPN Configuration
+# -----------------------------------------------------------------------------
+vpn_shared_key = "YourSecureSharedKey123!"  # Must match on-prem router config
+
+# VPN Gateway SKU (VpnGw1 or higher for IPv6 preview support)
+vpn_gateway_sku      = "VpnGw1"
+enable_active_active = true
+
+# -----------------------------------------------------------------------------
+# Test VM Configuration
+# -----------------------------------------------------------------------------
+test_vm_admin_username = "azureuser"
+test_vm_ssh_public_key = "ssh-rsa AAAA..."  # Your SSH public key
+test_vm_size           = "Standard_B1s"
+
+# -----------------------------------------------------------------------------
+# Network Ranges (defaults should work, modify if needed)
+# -----------------------------------------------------------------------------
+# vnet_ipv4_cidr = "10.1.0.0/16"
+# vnet_ipv6_cidr = "fd20:d:1::/48"
+
+# onprem_ipv4_ranges = ["192.168.0.0/16"]
+# onprem_ipv6_ranges = ["fd20:c:1::/48"]
+# onprem_bgp_asn     = 65001

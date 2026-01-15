@@ -1,0 +1,20 @@
+{
+  "tunnels": [
+    {
+      "name": "aws-r1-v4-tun1",
+      "remote_ip": "52.45.205.75",
+      "psk": "4kPpyL.ZU5PZRLkAneghJkzv8GTbgdG_",
+      "local_inside_ip": "169.254.11.62",
+      "remote_inside_ip": "169.254.11.61",
+      "remote_asn": 64512
+    },
+    {
+      "name": "aws-r1-v4-tun2",
+      "remote_ip": "52.200.66.48",
+      "psk": "SezEovN0T6NK5eIhud1XzOeLlOJz61a0",
+      "local_inside_ip": "169.254.148.58",
+      "remote_inside_ip": "169.254.148.57",
+      "remote_asn": 64512
+    }
+  ]
+}

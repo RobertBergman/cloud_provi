@@ -1,0 +1,419 @@
+#cloud-config
+# =============================================================================
+# Cloud-Init for VPN Router (FreeSwan + FRR)
+# =============================================================================
+# This configures a router VM with:
+# - LibreSwan (IPsec VPN)
+# - FRR (BGP routing)
+# - Helper scripts for VPN configuration
+# =============================================================================
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - libreswan
+  - frr
+  - frr-pythontools
+  - net-tools
+  - tcpdump
+  - traceroute
+  - mtr-tiny
+  - iptables-persistent
+  - jq
+
+write_files:
+  # Sysctl for IP forwarding and IPsec
+  - path: /etc/sysctl.d/99-vpn-router.conf
+    content: |
+      # IPv4 forwarding
+      net.ipv4.ip_forward = 1
+      net.ipv4.conf.all.accept_redirects = 0
+      net.ipv4.conf.all.send_redirects = 0
+      net.ipv4.conf.default.accept_redirects = 0
+      net.ipv4.conf.default.send_redirects = 0
+
+      # IPv6 forwarding
+      net.ipv6.conf.all.forwarding = 1
+      net.ipv6.conf.default.forwarding = 1
+      net.ipv6.conf.all.accept_redirects = 0
+      net.ipv6.conf.default.accept_redirects = 0
+
+      # IPsec
+      net.ipv4.conf.all.rp_filter = 0
+      net.ipv4.conf.default.rp_filter = 0
+
+  # FRR daemons config
+  - path: /etc/frr/daemons
+    content: |
+      bgpd=yes
+      ospfd=no
+      ospf6d=no
+      ripd=no
+      ripngd=no
+      isisd=no
+      pimd=no
+      ldpd=no
+      nhrpd=no
+      eigrpd=no
+      babeld=no
+      sharpd=no
+      staticd=yes
+      pbrd=no
+      bfdd=no
+      fabricd=no
+      vrrpd=no
+
+      vtysh_enable=yes
+      zebra_options="  -A 127.0.0.1 -s 90000000"
+      bgpd_options="   -A 127.0.0.1"
+      staticd_options="-A 127.0.0.1"
+
+  # Base FRR configuration
+  - path: /etc/frr/frr.conf
+    content: |
+      frr version 8.1
+      frr defaults traditional
+      hostname router-${router_id}
+      log syslog informational
+      no ipv6 forwarding
+      service integrated-vtysh-config
+      !
+      router bgp ${bgp_asn}
+        bgp router-id ${router_ip}
+        bgp log-neighbor-changes
+        no bgp ebgp-requires-policy
+        no bgp network import-check
+        !
+        ! Networks to advertise (on-prem ranges)
+        address-family ipv4 unicast
+          network ${ipv4_networks}
+        exit-address-family
+        !
+        address-family ipv6 unicast
+          network ${ipv6_networks}
+        exit-address-family
+        !
+        ! BGP neighbors will be added by configure-vpn.sh
+      exit
+      !
+      line vty
+      !
+
+  # IPsec base configuration
+  - path: /etc/ipsec.conf
+    content: |
+      # /etc/ipsec.conf - LibreSwan IPsec configuration
+      config setup
+        logfile=/var/log/pluto.log
+        plutodebug=none
+        # uniqueids=yes
+        virtual_private=%v4:10.0.0.0/8,%v4:192.168.0.0/16,%v4:172.16.0.0/12,%v6:fd00::/8
+
+      # Connection definitions will be added by configure-vpn.sh
+      # Include directory for additional connections
+      include /etc/ipsec.d/*.conf
+
+  # IPsec secrets (placeholder)
+  - path: /etc/ipsec.secrets
+    permissions: '0600'
+    content: |
+      # /etc/ipsec.secrets - IPsec pre-shared keys
+      # Format: LOCAL_IP REMOTE_IP : PSK "shared_secret"
+      # Entries will be added by configure-vpn.sh
+
+  # VPN configuration script
+  - path: /usr/local/bin/configure-vpn.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # =============================================================================
+      # Configure VPN Tunnel - Adds IPsec + BGP config for a cloud VPN endpoint
+      # =============================================================================
+      # Usage: configure-vpn.sh --cloud <aws|gcp|azure> --config <json-file>
+      # Or interactive mode: configure-vpn.sh
+      # =============================================================================
+
+      set -e
+
+      IPSEC_DIR="/etc/ipsec.d"
+      FRR_CONF="/etc/frr/frr.conf"
+      BGP_ASN="${bgp_asn}"
+
+      show_help() {
+        echo "Usage: $0 [OPTIONS]"
+        echo ""
+        echo "Options:"
+        echo "  --cloud <aws|gcp|azure>  Cloud provider"
+        echo "  --config <file>          JSON config file with tunnel details"
+        echo "  --interactive            Interactive mode (prompts for values)"
+        echo "  --help                   Show this help"
+        echo ""
+        echo "Config file format (JSON):"
+        echo '{'
+        echo '  "tunnels": ['
+        echo '    {'
+        echo '      "name": "aws-tunnel-1",'
+        echo '      "remote_ip": "52.x.x.x",'
+        echo '      "psk": "secret",'
+        echo '      "local_inside_ip": "169.254.x.1/30",'
+        echo '      "remote_inside_ip": "169.254.x.2",'
+        echo '      "remote_asn": 64512'
+        echo '    }'
+        echo '  ]'
+        echo '}'
+      }
+
+      add_ipsec_tunnel() {
+        local NAME="$1"
+        local REMOTE_IP="$2"
+        local PSK="$3"
+        local LOCAL_INSIDE="$4"
+        local REMOTE_INSIDE="$5"
+
+        echo "Adding IPsec tunnel: $NAME"
+
+        # Add connection to ipsec.d
+        cat > "$IPSEC_DIR/$NAME.conf" << EOF
+      conn $NAME
+        authby=secret
+        auto=start
+        type=tunnel
+        ikev2=yes
+        ike=aes256-sha256-modp2048
+        esp=aes256-sha256
+        left=%defaultroute
+        leftid=%any
+        leftsubnet=0.0.0.0/0,::/0
+        right=$REMOTE_IP
+        rightsubnet=0.0.0.0/0,::/0
+        # Tunnel inside IPs
+        leftsourceip=$LOCAL_INSIDE
+        mark=\$((RANDOM % 1000 + 100))
+        vti-interface=vti-$NAME
+        vti-routing=yes
+      EOF
+
+        # Add PSK
+        echo "%any $REMOTE_IP : PSK \"$PSK\"" >> /etc/ipsec.secrets
+
+        echo "  Created $IPSEC_DIR/$NAME.conf"
+      }
+
+      add_bgp_neighbor() {
+        local REMOTE_INSIDE="$1"
+        local REMOTE_ASN="$2"
+        local NAME="$3"
+
+        echo "Adding BGP neighbor: $REMOTE_INSIDE (ASN $REMOTE_ASN)"
+
+        # Add neighbor to FRR using vtysh
+        vtysh -c "configure terminal" \
+              -c "router bgp $BGP_ASN" \
+              -c "neighbor $REMOTE_INSIDE remote-as $REMOTE_ASN" \
+              -c "neighbor $REMOTE_INSIDE description $NAME" \
+              -c "neighbor $REMOTE_INSIDE ebgp-multihop 255" \
+              -c "address-family ipv4 unicast" \
+              -c "neighbor $REMOTE_INSIDE activate" \
+              -c "neighbor $REMOTE_INSIDE soft-reconfiguration inbound" \
+              -c "exit-address-family" \
+              -c "address-family ipv6 unicast" \
+              -c "neighbor $REMOTE_INSIDE activate" \
+              -c "neighbor $REMOTE_INSIDE soft-reconfiguration inbound" \
+              -c "exit-address-family" \
+              -c "exit" \
+              -c "exit" \
+              -c "write memory"
+
+        echo "  Added BGP neighbor $REMOTE_INSIDE"
+      }
+
+      configure_from_json() {
+        local CONFIG_FILE="$1"
+
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "Error: Config file not found: $CONFIG_FILE"
+          exit 1
+        fi
+
+        # Parse JSON and configure each tunnel
+        local TUNNEL_COUNT=\$(jq '.tunnels | length' "$CONFIG_FILE")
+
+        for i in \$(seq 0 \$((TUNNEL_COUNT - 1))); do
+          local NAME=\$(jq -r ".tunnels[\$i].name" "$CONFIG_FILE")
+          local REMOTE_IP=\$(jq -r ".tunnels[\$i].remote_ip" "$CONFIG_FILE")
+          local PSK=\$(jq -r ".tunnels[\$i].psk" "$CONFIG_FILE")
+          local LOCAL_INSIDE=\$(jq -r ".tunnels[\$i].local_inside_ip" "$CONFIG_FILE")
+          local REMOTE_INSIDE=\$(jq -r ".tunnels[\$i].remote_inside_ip" "$CONFIG_FILE")
+          local REMOTE_ASN=\$(jq -r ".tunnels[\$i].remote_asn" "$CONFIG_FILE")
+
+          add_ipsec_tunnel "$NAME" "$REMOTE_IP" "$PSK" "$LOCAL_INSIDE" "$REMOTE_INSIDE"
+          add_bgp_neighbor "$REMOTE_INSIDE" "$REMOTE_ASN" "$NAME"
+        done
+
+        # Restart services
+        echo "Restarting IPsec..."
+        systemctl restart ipsec
+
+        echo "Configuration complete!"
+      }
+
+      interactive_mode() {
+        echo "=== Interactive VPN Configuration ==="
+        echo ""
+
+        read -p "Tunnel name (e.g., aws-tunnel-1): " NAME
+        read -p "Remote (cloud) public IP: " REMOTE_IP
+        read -p "Pre-shared key: " PSK
+        read -p "Local inside IP (e.g., 169.254.0.1/30): " LOCAL_INSIDE
+        read -p "Remote inside IP (e.g., 169.254.0.2): " REMOTE_INSIDE
+        read -p "Remote BGP ASN (e.g., 64512): " REMOTE_ASN
+
+        # Strip netmask from LOCAL_INSIDE for IPsec config
+        LOCAL_INSIDE_IP=\$(echo "$LOCAL_INSIDE" | cut -d'/' -f1)
+
+        add_ipsec_tunnel "$NAME" "$REMOTE_IP" "$PSK" "$LOCAL_INSIDE_IP" "$REMOTE_INSIDE"
+        add_bgp_neighbor "$REMOTE_INSIDE" "$REMOTE_ASN" "$NAME"
+
+        echo ""
+        read -p "Restart IPsec now? (y/n): " RESTART
+        if [ "$RESTART" = "y" ]; then
+          systemctl restart ipsec
+          echo "IPsec restarted"
+        fi
+
+        echo ""
+        echo "Add another tunnel? Run: sudo configure-vpn.sh --interactive"
+      }
+
+      # Main
+      case "$1" in
+        --help|-h)
+          show_help
+          exit 0
+          ;;
+        --config)
+          configure_from_json "$2"
+          ;;
+        --interactive|-i)
+          interactive_mode
+          ;;
+        *)
+          if [ -n "$1" ] && [ -f "$1" ]; then
+            configure_from_json "$1"
+          else
+            interactive_mode
+          fi
+          ;;
+      esac
+
+  # VPN status script
+  - path: /usr/local/bin/vpn-status.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # =============================================================================
+      # VPN Status - Shows IPsec tunnels and BGP sessions
+      # =============================================================================
+
+      echo "=============================================="
+      echo "         VPN ROUTER STATUS - Router ${router_id}"
+      echo "=============================================="
+      echo ""
+
+      echo "=== IPsec Tunnels ==="
+      ipsec status 2>/dev/null || echo "IPsec not running or no tunnels configured"
+      echo ""
+
+      echo "=== BGP Summary ==="
+      vtysh -c "show bgp summary" 2>/dev/null || echo "FRR/BGP not running"
+      echo ""
+
+      echo "=== IPv4 Routes Learned ==="
+      vtysh -c "show bgp ipv4 unicast" 2>/dev/null | head -30
+      echo ""
+
+      echo "=== IPv6 Routes Learned ==="
+      vtysh -c "show bgp ipv6 unicast" 2>/dev/null | head -30
+      echo ""
+
+      echo "=== VTI Interfaces ==="
+      ip link show type vti 2>/dev/null || echo "No VTI interfaces"
+      echo ""
+
+      echo "=== Routing Table (IPv4) ==="
+      ip route show | grep -v "^default" | head -20
+      echo ""
+
+      echo "=== Routing Table (IPv6) ==="
+      ip -6 route show | grep -v "^fe80" | head -20
+      echo ""
+
+      echo "=============================================="
+
+  # Quick AWS config helper
+  - path: /usr/local/bin/configure-aws-vpn.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Helper script specifically for AWS VPN configuration
+      # Usage: configure-aws-vpn.sh <vpn-connection-id>
+
+      echo "=== AWS VPN Configuration Helper ==="
+      echo ""
+      echo "After deploying AWS VPN, you will receive:"
+      echo "  - 2 tunnel endpoints per VPN connection"
+      echo "  - Pre-shared keys for each tunnel"
+      echo "  - Inside IP addresses for BGP"
+      echo ""
+      echo "Run the main configure script for each tunnel:"
+      echo "  sudo configure-vpn.sh --interactive"
+      echo ""
+      echo "Or provide a JSON config file:"
+      echo "  sudo configure-vpn.sh /path/to/aws-vpn-config.json"
+      echo ""
+      echo "Example JSON format:"
+      cat << 'JSONEOF'
+      {
+        "tunnels": [
+          {
+            "name": "aws-tun1",
+            "remote_ip": "52.x.x.x",
+            "psk": "your-psk-1",
+            "local_inside_ip": "169.254.x.1",
+            "remote_inside_ip": "169.254.x.2",
+            "remote_asn": 64512
+          },
+          {
+            "name": "aws-tun2",
+            "remote_ip": "52.y.y.y",
+            "psk": "your-psk-2",
+            "local_inside_ip": "169.254.y.1",
+            "remote_inside_ip": "169.254.y.2",
+            "remote_asn": 64512
+          }
+        ]
+      }
+      JSONEOF
+
+runcmd:
+  # Apply sysctl settings
+  - sysctl -p /etc/sysctl.d/99-vpn-router.conf
+
+  # Enable and start FRR
+  - systemctl enable frr
+  - systemctl start frr
+
+  # Enable IPsec (don't start yet - no tunnels configured)
+  - systemctl enable ipsec
+
+  # Set permissions
+  - chmod 600 /etc/ipsec.secrets
+  - chown root:root /etc/ipsec.secrets
+
+  # Create ipsec.d directory if it doesn't exist
+  - mkdir -p /etc/ipsec.d
+
+  # Log completion
+  - echo "Router ${router_id} initialization complete" | tee /var/log/router-init.log
+  - echo "Run 'sudo configure-vpn.sh' to add VPN tunnels" | tee -a /var/log/router-init.log

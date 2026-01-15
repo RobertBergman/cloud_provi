@@ -1,0 +1,344 @@
+#cloud-config
+# Cloud-init configuration for strongSwan VPN Gateway with BGP (FRR)
+# This configures the VM as an IPsec VPN gateway to connect to Azure Virtual WAN
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - strongswan
+  - strongswan-pki
+  - libcharon-extra-plugins
+  - frr
+  - frr-pythontools
+  - net-tools
+  - iptables-persistent
+  - tcpdump
+  - traceroute
+
+write_files:
+  # strongSwan IPsec configuration
+  - path: /etc/ipsec.conf
+    content: |
+      # /etc/ipsec.conf - strongSwan IPsec configuration
+      # Azure Virtual WAN S2S VPN Connection
+
+      config setup
+          charondebug="ike 2, knl 2, cfg 2, net 2, esp 2, dmn 2, mgr 2"
+          uniqueids=yes
+          strictcrlpolicy=no
+
+      # Default connection settings
+      conn %default
+          ikelifetime=28800s
+          keylife=27000s
+          rekeymargin=3m
+          keyingtries=%forever
+          keyexchange=ikev2
+          authby=secret
+          mobike=no
+
+      # Connection to Azure VPN Gateway Instance 0
+      conn azure-vwan-0
+          left=%defaultroute
+          leftid=${onprem_public_ip}
+          leftsubnet=0.0.0.0/0,::/0
+          leftupdown=/etc/ipsec.d/azure-updown.sh
+          right=${azure_vpn_gateway_ip_0}
+          rightsubnet=0.0.0.0/0,::/0
+          ike=aes256-sha256-modp2048!
+          esp=aes256gcm16-modp2048!
+          auto=start
+          dpdaction=restart
+          dpddelay=30s
+          dpdtimeout=120s
+          type=tunnel
+
+      # Connection to Azure VPN Gateway Instance 1 (redundancy)
+      conn azure-vwan-1
+          left=%defaultroute
+          leftid=${onprem_public_ip}
+          leftsubnet=0.0.0.0/0,::/0
+          leftupdown=/etc/ipsec.d/azure-updown.sh
+          right=${azure_vpn_gateway_ip_1}
+          rightsubnet=0.0.0.0/0,::/0
+          ike=aes256-sha256-modp2048!
+          esp=aes256gcm16-modp2048!
+          auto=start
+          dpdaction=restart
+          dpddelay=30s
+          dpdtimeout=120s
+          type=tunnel
+
+  # IPsec secrets (pre-shared key)
+  - path: /etc/ipsec.secrets
+    permissions: '0600'
+    content: |
+      # /etc/ipsec.secrets - strongSwan IPsec secrets
+      ${onprem_public_ip} ${azure_vpn_gateway_ip_0} : PSK "${vpn_psk}"
+      ${onprem_public_ip} ${azure_vpn_gateway_ip_1} : PSK "${vpn_psk}"
+
+  # Connection up/down script
+  - path: /etc/ipsec.d/azure-updown.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # IPsec connection up/down script
+
+      case "$PLUTO_VERB" in
+          up-client)
+              logger -t ipsec "Connection $PLUTO_CONNECTION to $PLUTO_PEER established"
+              ;;
+          down-client)
+              logger -t ipsec "Connection $PLUTO_CONNECTION to $PLUTO_PEER terminated"
+              ;;
+      esac
+
+  # FRR daemons configuration
+  - path: /etc/frr/daemons
+    content: |
+      # FRR daemons configuration
+      zebra=yes
+      bgpd=yes
+      ospfd=no
+      ospf6d=no
+      ripd=no
+      ripngd=no
+      isisd=no
+      pimd=no
+      ldpd=no
+      nhrpd=no
+      eigrpd=no
+      babeld=no
+      sharpd=no
+      staticd=yes
+      pbrd=no
+      bfdd=no
+      fabricd=no
+      vrrpd=no
+
+  # FRR BGP configuration
+  - path: /etc/frr/frr.conf
+    content: |
+      ! /etc/frr/frr.conf
+      ! FRR configuration for BGP peering with Azure Virtual WAN
+
+      frr version 8.1
+      frr defaults traditional
+      hostname onprem-vpn-gateway
+      log syslog informational
+      no ipv6 forwarding
+      service integrated-vtysh-config
+      !
+      ! Interface configuration
+      interface eth0
+       description WAN Interface
+      !
+      ! BGP Configuration
+      router bgp ${onprem_bgp_asn}
+       bgp router-id ${onprem_private_ip}
+       no bgp ebgp-requires-policy
+       no bgp default ipv4-unicast
+       !
+       ! Azure VPN Gateway Instance 0
+       neighbor ${azure_bgp_ip_0} remote-as ${azure_bgp_asn}
+       neighbor ${azure_bgp_ip_0} description Azure-VWAN-Instance0
+       neighbor ${azure_bgp_ip_0} ebgp-multihop 255
+       neighbor ${azure_bgp_ip_0} update-source ${onprem_private_ip}
+       !
+       ! Azure VPN Gateway Instance 1
+       neighbor ${azure_bgp_ip_1} remote-as ${azure_bgp_asn}
+       neighbor ${azure_bgp_ip_1} description Azure-VWAN-Instance1
+       neighbor ${azure_bgp_ip_1} ebgp-multihop 255
+       neighbor ${azure_bgp_ip_1} update-source ${onprem_private_ip}
+       !
+       ! IPv4 Address Family
+       address-family ipv4 unicast
+        network ${onprem_ipv4_cidr}
+        neighbor ${azure_bgp_ip_0} activate
+        neighbor ${azure_bgp_ip_0} soft-reconfiguration inbound
+        neighbor ${azure_bgp_ip_1} activate
+        neighbor ${azure_bgp_ip_1} soft-reconfiguration inbound
+       exit-address-family
+       !
+       ! IPv6 Address Family (if needed)
+       address-family ipv6 unicast
+        network ${onprem_ipv6_cidr}
+        neighbor ${azure_bgp_ip_0} activate
+        neighbor ${azure_bgp_ip_1} activate
+       exit-address-family
+      !
+      line vty
+      !
+
+  # Sysctl settings for IP forwarding
+  - path: /etc/sysctl.d/99-vpn-gateway.conf
+    content: |
+      # Enable IP forwarding for VPN gateway
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.forwarding = 1
+
+      # Disable ICMP redirects
+      net.ipv4.conf.all.send_redirects = 0
+      net.ipv4.conf.default.send_redirects = 0
+      net.ipv4.conf.all.accept_redirects = 0
+      net.ipv4.conf.default.accept_redirects = 0
+      net.ipv6.conf.all.accept_redirects = 0
+      net.ipv6.conf.default.accept_redirects = 0
+
+      # Disable source routing
+      net.ipv4.conf.all.accept_source_route = 0
+      net.ipv4.conf.default.accept_source_route = 0
+
+  # IPtables rules for NAT and forwarding
+  - path: /etc/iptables/rules.v4
+    content: |
+      *filter
+      :INPUT ACCEPT [0:0]
+      :FORWARD ACCEPT [0:0]
+      :OUTPUT ACCEPT [0:0]
+
+      # Allow established connections
+      -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+      # Allow loopback
+      -A INPUT -i lo -j ACCEPT
+
+      # Allow SSH
+      -A INPUT -p tcp --dport 22 -j ACCEPT
+
+      # Allow IKE (UDP 500)
+      -A INPUT -p udp --dport 500 -j ACCEPT
+
+      # Allow IPsec NAT-T (UDP 4500)
+      -A INPUT -p udp --dport 4500 -j ACCEPT
+
+      # Allow ESP
+      -A INPUT -p esp -j ACCEPT
+
+      # Allow ICMP
+      -A INPUT -p icmp -j ACCEPT
+
+      # Allow BGP
+      -A INPUT -p tcp --dport 179 -j ACCEPT
+
+      # Allow forwarding for VPN traffic
+      -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+      -A FORWARD -s ${onprem_ipv4_cidr} -j ACCEPT
+      -A FORWARD -d ${onprem_ipv4_cidr} -j ACCEPT
+      -A FORWARD -s ${azure_vnet_ipv4_cidr} -j ACCEPT
+      -A FORWARD -d ${azure_vnet_ipv4_cidr} -j ACCEPT
+      -A FORWARD -s ${azure_hub_ipv4_cidr} -j ACCEPT
+      -A FORWARD -d ${azure_hub_ipv4_cidr} -j ACCEPT
+
+      COMMIT
+
+  # Management script to update Azure VPN Gateway IPs
+  - path: /usr/local/bin/update-vpn-config.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Script to update VPN configuration with actual Azure VPN Gateway IPs
+      # Run this after Azure VPN Gateway is provisioned
+
+      set -e
+
+      echo "Azure Virtual WAN VPN Configuration Updater"
+      echo "==========================================="
+      echo ""
+
+      read -p "Enter Azure VPN Gateway Instance 0 Public IP: " AZURE_VPN_IP_0
+      read -p "Enter Azure VPN Gateway Instance 1 Public IP: " AZURE_VPN_IP_1
+      read -p "Enter Azure BGP Peer IP for Instance 0: " AZURE_BGP_IP_0
+      read -p "Enter Azure BGP Peer IP for Instance 1: " AZURE_BGP_IP_1
+
+      echo ""
+      echo "Updating IPsec configuration..."
+
+      # Update ipsec.conf
+      sed -i "s/PLACEHOLDER_AZURE_VPN_IP_0/$AZURE_VPN_IP_0/g" /etc/ipsec.conf
+      sed -i "s/PLACEHOLDER_AZURE_VPN_IP_1/$AZURE_VPN_IP_1/g" /etc/ipsec.conf
+
+      # Update ipsec.secrets
+      sed -i "s/PLACEHOLDER_AZURE_VPN_IP_0/$AZURE_VPN_IP_0/g" /etc/ipsec.secrets
+      sed -i "s/PLACEHOLDER_AZURE_VPN_IP_1/$AZURE_VPN_IP_1/g" /etc/ipsec.secrets
+
+      echo "Updating FRR/BGP configuration..."
+
+      # Update frr.conf
+      sed -i "s/PLACEHOLDER_AZURE_BGP_IP_0/$AZURE_BGP_IP_0/g" /etc/frr/frr.conf
+      sed -i "s/PLACEHOLDER_AZURE_BGP_IP_1/$AZURE_BGP_IP_1/g" /etc/frr/frr.conf
+
+      echo ""
+      echo "Restarting services..."
+
+      systemctl restart ipsec
+      systemctl restart frr
+
+      echo ""
+      echo "Configuration updated successfully!"
+      echo ""
+      echo "Check IPsec status:  ipsec statusall"
+      echo "Check BGP status:    vtysh -c 'show ip bgp summary'"
+
+  # Status check script
+  - path: /usr/local/bin/vpn-status.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # VPN Status Check Script
+
+      echo "=========================================="
+      echo "  VPN Gateway Status"
+      echo "=========================================="
+      echo ""
+
+      echo "--- IPsec Tunnel Status ---"
+      ipsec statusall 2>/dev/null || echo "IPsec not running or not configured"
+      echo ""
+
+      echo "--- BGP Peer Status ---"
+      vtysh -c "show ip bgp summary" 2>/dev/null || echo "BGP not running or not configured"
+      echo ""
+
+      echo "--- BGP Received Routes ---"
+      vtysh -c "show ip bgp" 2>/dev/null | head -30 || echo "No routes"
+      echo ""
+
+      echo "--- Interface Status ---"
+      ip addr show eth0
+      echo ""
+
+      echo "--- Routing Table ---"
+      ip route | head -20
+
+runcmd:
+  # Apply sysctl settings
+  - sysctl -p /etc/sysctl.d/99-vpn-gateway.conf
+
+  # Load iptables rules
+  - iptables-restore < /etc/iptables/rules.v4 || true
+
+  # Enable and start services
+  - systemctl enable ipsec
+  - systemctl enable frr
+
+  # Note: Services will start but won't connect until Azure VPN Gateway IPs are configured
+  - systemctl start frr || true
+
+  # Create helpful symlinks
+  - ln -sf /usr/local/bin/vpn-status.sh /usr/local/bin/vpn-status
+  - ln -sf /usr/local/bin/update-vpn-config.sh /usr/local/bin/update-vpn-config
+
+  # Log completion
+  - echo "Cloud-init VPN gateway setup completed at $(date)" >> /var/log/cloud-init-vpn.log
+  - echo "Run 'update-vpn-config' to configure Azure VPN Gateway IPs" >> /var/log/cloud-init-vpn.log
+
+final_message: |
+  VPN Gateway VM provisioning complete.
+
+  Next steps:
+  1. Wait for Azure VPN Gateway to be provisioned
+  2. SSH to this VM and run: sudo update-vpn-config
+  3. Enter the Azure VPN Gateway public IPs and BGP peer IPs
+  4. Check status with: sudo vpn-status

@@ -1,0 +1,24 @@
+{
+  "tunnels": [
+    {
+      "name": "aws-r1-v6-tun1",
+      "remote_ip": "13.x.x.x",
+      "psk": "your-psk-here",
+      "local_inside_ip": "169.254.x.x",
+      "remote_inside_ip": "169.254.x.x",
+      "local_inside_ipv6": "fdxx:xxxx::2",
+      "remote_inside_ipv6": "fdxx:xxxx::1",
+      "remote_asn": 64512
+    },
+    {
+      "name": "aws-r1-v6-tun2",
+      "remote_ip": "34.x.x.x",
+      "psk": "your-psk-here",
+      "local_inside_ip": "169.254.y.y",
+      "remote_inside_ip": "169.254.y.y",
+      "local_inside_ipv6": "fdyy:yyyy::2",
+      "remote_inside_ipv6": "fdyy:yyyy::1",
+      "remote_asn": 64512
+    }
+  ]
+}
