@@ -1,0 +1,15 @@
+# =============================================================================
+# Example Terraform Variables
+# =============================================================================
+# Copy this file to terraform.tfvars and update with your values
+
+project_id  = "dual-stack-vpn-test"
+region      = "us-central1"
+environment = "prod"
+
+# IPsec pre-shared key (use a strong random string)
+vpn_shared_secret = "YourSecureSharedKey123!"
+
+# On-prem router public IPs (from terraform-onprem-sim output)
+onprem_router_1_ip = "34.x.x.x"
+onprem_router_2_ip = "34.y.y.y"

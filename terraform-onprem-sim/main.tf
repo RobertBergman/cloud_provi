@@ -26,9 +26,10 @@ provider "google" {
 
 locals {
   # Network ranges
-  vpc_ipv4_cidr      = "192.168.0.0/16"
-  vpc_ipv6_cidr      = "fd20:e:1::/48"
-  router_subnet_ipv4 = "192.168.0.0/24"
+  vpc_ipv4_cidr        = "192.168.0.0/16"
+  vpc_ipv6_cidr        = "fd20:e:1::/48"     # Internal ULA for VPC
+  bgp_ipv6_advertise   = "dead:beef::/48"    # IPv6 prefix to advertise via BGP
+  router_subnet_ipv4   = "192.168.0.0/24"
   workload_subnet_ipv4 = "192.168.1.0/24"
 
   # Router IPs
@@ -159,8 +160,12 @@ resource "google_compute_firewall" "allow_internal_ipv6" {
     ports    = ["0-65535"]
   }
 
-  # On-prem IPv6 + potential cloud IPv6 ranges
-  source_ranges = [local.vpc_ipv6_cidr]
+  # On-prem IPv6 + cloud IPv6 + BGP advertised prefix
+  source_ranges = [
+    local.vpc_ipv6_cidr,        # Internal ULA
+    local.bgp_ipv6_advertise,   # dead:beef::/48
+    "fd20:f:1::/48",            # GCP cloud IPv6
+  ]
 }
 
 # =============================================================================
@@ -211,12 +216,13 @@ resource "google_compute_instance" "router_1" {
 
   metadata = {
     user-data = templatefile("${path.module}/cloud-init-router.yaml", {
-      router_id      = "1"
-      router_ip      = local.router_1_ip
-      peer_router_ip = local.router_2_ip
-      bgp_asn        = local.onprem_asn
-      ipv4_networks  = local.vpc_ipv4_cidr
-      ipv6_networks  = local.vpc_ipv6_cidr
+      router_id          = "1"
+      router_ip          = local.router_1_ip
+      peer_router_ip     = local.router_2_ip
+      bgp_asn            = local.onprem_asn
+      ipv4_networks      = local.vpc_ipv4_cidr
+      ipv6_networks      = local.vpc_ipv6_cidr
+      bgp_ipv6_advertise = local.bgp_ipv6_advertise
     })
   }
 
@@ -257,12 +263,13 @@ resource "google_compute_instance" "router_2" {
 
   metadata = {
     user-data = templatefile("${path.module}/cloud-init-router.yaml", {
-      router_id      = "2"
-      router_ip      = local.router_2_ip
-      peer_router_ip = local.router_1_ip
-      bgp_asn        = local.onprem_asn
-      ipv4_networks  = local.vpc_ipv4_cidr
-      ipv6_networks  = local.vpc_ipv6_cidr
+      router_id          = "2"
+      router_ip          = local.router_2_ip
+      peer_router_ip     = local.router_1_ip
+      bgp_asn            = local.onprem_asn
+      ipv4_networks      = local.vpc_ipv4_cidr
+      ipv6_networks      = local.vpc_ipv6_cidr
+      bgp_ipv6_advertise = local.bgp_ipv6_advertise
     })
   }
 
@@ -308,9 +315,16 @@ resource "google_compute_instance" "test_vm" {
     apt-get update
     apt-get install -y traceroute mtr-tiny tcpdump
 
-    # Add routes to cloud networks via routers (ECMP)
-    # These will be added after router config is complete
+    # Add secondary IPv6 address for BGP advertised prefix (dead:beef::/48)
+    # This allows testing connectivity using the advertised prefix
+    IFACE=$(ip -o link show | awk -F': ' '/^2:/{print $2}')
+    ip -6 addr add dead:beef:1::100/48 dev $IFACE 2>/dev/null || true
+
+    # Log the addresses
     echo "Test VM ready for connectivity testing"
+    echo "IPv4: $(hostname -I | awk '{print $1}')"
+    echo "IPv6 addresses:"
+    ip -6 addr show dev $IFACE scope global | grep inet6
   EOF
 
   service_account {

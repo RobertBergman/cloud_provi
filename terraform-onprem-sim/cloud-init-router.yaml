@@ -91,7 +91,10 @@ write_files:
         exit-address-family
         !
         address-family ipv6 unicast
+          ! Internal ULA range (VPC)
           network ${ipv6_networks}
+          ! User-specified BGP advertisement (e.g., dead:beef::/48)
+          network ${bgp_ipv6_advertise}
         exit-address-family
         !
         ! BGP neighbors will be added by configure-vpn.sh
